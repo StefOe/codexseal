@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — start the claude-code container with flexible options
+# run.sh — start the coding-seal container with flexible options
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────
@@ -8,8 +8,8 @@ PROJECT_MOUNTS=()
 MODE="local"            # "local"  → interactive TTY, claude starts immediately
                         # "remote" → detached, container stays up for SSH access
                         # "auth"   → interactive, runs `claude auth login`, saves token to named volume
-IMAGE="${CLAUDE_IMAGE:-localhost/claude-code:latest}"
-CONTAINER_NAME="${CONTAINER_NAME:-claude-code}"
+IMAGE="${CLAUDE_IMAGE:-localhost/coding-seal:latest}"
+CONTAINER_NAME="${CONTAINER_NAME:-coding-seal}"
 CLAUDE_VOLUME="${CLAUDE_VOLUME:-claude-auth}"
 SSH_PORT="${SSH_PORT:-2222}"
 
@@ -26,8 +26,8 @@ Options:
   -p, --project PATH    Bind-mount a project directory (repeatable)
   --remote              Headless mode: container stays running for SSH/remote access
   --port PORT           SSH port on localhost (default: 2222)
-  --name NAME           Container name (default: claude-code)
-  --image IMAGE         Image to use (default: localhost/claude-code:latest)
+  --name NAME           Container name (default: coding-seal)
+  --image IMAGE         Image to use (default: localhost/coding-seal:latest)
   -h, --help            Show this help
 
 Environment variables (set these before running):

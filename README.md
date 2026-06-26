@@ -80,7 +80,7 @@ cp .env.example .env
 #    Edit .env — set SSH_PUBLIC_KEY to the contents of ~/.ssh/id_ed25519.pub
 
 # 2. Build the image (~5 minutes)
-podman build -t claude-code:latest .
+podman build -t coding-seal:latest .
 
 # 3. Authenticate Claude (browser flow, token saved permanently)
 set -a && source .env && set +a
@@ -220,7 +220,7 @@ podman run -it --rm \
   --publish 127.0.0.1:2222:2222 \
   --env SSH_PUBLIC_KEY \
   --volume ~/projects/myproject:~/projects/myproject:Z \
-  localhost/claude-code:latest \
+  localhost/coding-seal:latest \
   bash
 ```
 
@@ -255,7 +255,7 @@ scripts/run.sh --remote -p ~/projects/myproject
 
 Output:
 ```
-Starting container 'claude-code'...
+Starting container 'coding-seal'...
 
   SSH into the container:
     ssh -p 2222 -i ~/.ssh/id_ed25519 root@localhost
@@ -264,7 +264,7 @@ Starting container 'claude-code'...
     claude --dangerouslySkipPermissions
 
   Stop the container:
-    podman stop claude-code
+    podman stop coding-seal
 ```
 
 **Step 2 — Add the container to your SSH config**
@@ -326,7 +326,7 @@ From this point on, every bash command Claude runs executes as a container proce
 **Step 7 — Stop the container when done**
 
 ```bash
-podman stop claude-code
+podman stop coding-seal
 ```
 
 ---
@@ -447,7 +447,7 @@ podman run -it --rm \
   --volume /usr/lib/python3/dist-packages:/mnt/host-python/dist-packages:ro,Z \
   --volume ~/.local/lib/python3.12/site-packages:/mnt/host-python/user-packages:ro,Z \
   --env PYTHONPATH=/mnt/host-python/dist-packages:/mnt/host-python/user-packages \
-  localhost/claude-code:latest \
+  localhost/coding-seal:latest \
   claude --dangerouslySkipPermissions
 ```
 
@@ -459,13 +459,13 @@ Packages installed with `uv pip install` inside the container go into the contai
 
 **Full update** (base OS + Node.js + Claude Code + uv):
 ```bash
-podman build --pull=newer -t claude-code:latest .
+podman build --pull=newer -t coding-seal:latest .
 ```
 
 **Custom Python version:**
 ```bash
-podman build --build-arg PYTHON_VERSION=3.11 -t claude-code:py311 .
-CLAUDE_IMAGE=localhost/claude-code:py311 scripts/run.sh -p ~/projects/myproject
+podman build --build-arg PYTHON_VERSION=3.11 -t coding-seal:py311 .
+CLAUDE_IMAGE=localhost/coding-seal:py311 scripts/run.sh -p ~/projects/myproject
 ```
 
 ---
@@ -476,8 +476,8 @@ CLAUDE_IMAGE=localhost/claude-code:py311 scripts/run.sh -p ~/projects/myproject
 |---|---|---|
 | `claude` asks to authenticate on every run | No saved token | Run `scripts/run.sh --auth` once, then future runs read from the `claude-auth` volume |
 | `claude` exits with "Please authenticate" | Named volume was deleted | `podman volume ls \| grep claude-auth` — if missing, run `--auth` again |
-| `ssh: connect to host localhost port 2222: Connection refused` | Container not running or sshd didn't start | `podman ps`; `podman logs claude-code` for sshd errors |
-| `Permission denied (publickey)` via SSH | Wrong key or key not injected | Check `SSH_PUBLIC_KEY` is set; `podman exec claude-code cat /root/.ssh/authorized_keys` |
+| `ssh: connect to host localhost port 2222: Connection refused` | Container not running or sshd didn't start | `podman ps`; `podman logs coding-seal` for sshd errors |
+| `Permission denied (publickey)` via SSH | Wrong key or key not injected | Check `SSH_PUBLIC_KEY` is set; `podman exec coding-seal cat /root/.ssh/authorized_keys` |
 | VS Code says "Cannot connect to remote" | Container not running | Start with `scripts/run.sh --remote -p ...` first |
 | Claude Code extension runs on local, not inside container | Extension not installed on the remote | Extensions panel → Claude Code → "Install in SSH: claude-container" |
 | Claude's bash commands run on your host | VS Code not connected to container | Check VS Code title bar shows `[SSH: claude-container]` |
