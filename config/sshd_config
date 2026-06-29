@@ -22,12 +22,14 @@ PrintLastLog no
 ClientAliveInterval 30
 ClientAliveCountMax 3
 
-# Forward ANTHROPIC_API_KEY from SSH client via: ssh -o SendEnv=ANTHROPIC_API_KEY
-AcceptEnv ANTHROPIC_API_KEY LANG LC_*
+AcceptEnv LANG LC_*
 
-# NOTE: the `SetEnv` line that gives SSH sessions CLAUDE_CONFIG_DIR and any
-# runtime credential is appended by entrypoint.sh before sshd starts (it has to
-# include runtime values, so it can't be hard-coded here).
+# Give SSH / VS Code Remote-SSH sessions the same config dir as a local run, so
+# they read the login + settings from the bind-mounted ~/.claude volume. This is
+# a fixed path, so it's static here (no entrypoint needed). Auth is login-only —
+# `scripts/run.sh --auth` saves the credential into the volume that every session
+# reads — so there is no token/API key to forward.
+SetEnv CLAUDE_CONFIG_DIR=/home/coder/.claude
 
 # Log to stderr so `podman logs` captures it
 SyslogFacility AUTH

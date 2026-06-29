@@ -2,14 +2,20 @@
 # run.sh — start the coding-seal container with flexible options
 set -euo pipefail
 
+# Locate the repo so we can seed Claude's config from config/ (this script lives
+# in <repo>/scripts/).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+SETTINGS_SRC="${REPO_DIR}/config/claude-settings.json"
+
 # ── Defaults ──────────────────────────────────────────────────────────────
 GPU_FLAGS=()
 PROJECT_MOUNTS=()
-MODE="local"            # "local"  → interactive TTY, claude starts immediately
-                        # "remote" → Remote Control: foreground, runs `claude remote-control`
-                        #            so claude.ai/code + the Claude app can drive this env
-                        # "ssh"    → detached, container stays up for SSH / VS Code Remote-SSH
-                        # "auth"   → interactive, runs `claude auth login`, saves token to the auth dir
+MODE="local"            # "local"          → interactive TTY, `claude` starts immediately
+                        # "remote-control" → foreground `claude remote-control`, so
+                        #                     claude.ai/code + the Claude app can drive this env
+                        # "ssh"            → detached; SSH / VS Code Remote-SSH into the container
+                        # "auth"           → interactive `claude auth login`, saves login to the auth dir
 IMAGE="${CLAUDE_IMAGE:-localhost/coding-seal:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-coding-seal}"
 # Persistent auth lives in a FIXED host directory, not a podman named volume.
@@ -21,36 +27,45 @@ CONTAINER_NAME="${CONTAINER_NAME:-coding-seal}"
 CLAUDE_AUTH_DIR="${CLAUDE_AUTH_DIR:-${HOME}/.codingseal/claude-auth}"
 SSH_PORT="${SSH_PORT:-2222}"
 
+# Mutually exclusive mode requests (a container runs ONE command).
+want_auth=0
+want_rc=0
+want_ssh=0
+
 # ── Help ──────────────────────────────────────────────────────────────────
 usage() {
     cat <<'EOF'
 Usage: scripts/run.sh [OPTIONS]
 
 Options:
-  --auth                First-time setup: log in and save the token to the auth dir
-  --setup-token         Generate a long-lived OAuth token to paste into .env (Claude subscription)
+  --auth                One-time login: runs `claude auth login` and saves the
+                        credential to the auth dir (this is the only auth method)
   --gpu-nvidia          Pass through NVIDIA GPU(s) via /dev/nvidia* devices
   --gpu-amd             Pass through AMD GPU via /dev/kfd and /dev/dri
   --no-gpu              Run without GPU (default)
   -p, --project PATH    Bind-mount a project directory (repeatable)
-  --remote              Remote Control: run `claude remote-control` so claude.ai/code
-                        and the Claude mobile app can drive this environment
-                        (needs a full claude.ai login — run --auth first)
-  --ssh                 Headless mode: container stays running for SSH / VS Code Remote-SSH
+  --remote-control, --rc
+                        Remote Control: run `claude remote-control` (detached, in the
+                        background) so claude.ai/code and the Claude mobile app can
+                        drive this environment; get the URL via `podman logs`
+  --ssh                 Headless: container stays running for SSH / VS Code Remote-SSH
   --port PORT           SSH port on localhost, used by --ssh (default: 2222)
   --name NAME           Container name (default: coding-seal)
   --image IMAGE         Image to use (default: localhost/coding-seal:latest)
   -h, --help            Show this help
 
+Authentication:
+  Log in once with `scripts/run.sh --auth`. The login is saved in the host folder
+  (CLAUDE_AUTH_DIR) and reused on every run. Remote Control needs this full login —
+  long-lived tokens and API keys are not supported.
+
 Environment variables (set these before running):
-  CLAUDE_CODE_OAUTH_TOKEN  Long-lived token from --setup-token (recommended, subscription)
-  ANTHROPIC_API_KEY        A console.anthropic.com API key (alternative to the token)
-  SSH_PUBLIC_KEY           Public key injected into container's authorized_keys
+  SSH_PUBLIC_KEY           Public key injected into the container's authorized_keys (--ssh)
   CLAUDE_AUTH_DIR          Host dir for persistent login (default: ~/.codingseal/claude-auth)
   SSH_PORT, CONTAINER_NAME, CLAUDE_IMAGE  Override defaults
 
 Examples:
-  # First-time: authenticate once, token saved to ~/.codingseal/claude-auth
+  # First-time: log in once, saved to ~/.codingseal/claude-auth
   scripts/run.sh --auth
 
   # Interactive session with one project
@@ -60,16 +75,16 @@ Examples:
   scripts/run.sh -p ~/projects/myapp -p ~/projects/infra
 
   # Remote Control — drive this container from claude.ai/code or the Claude app
-  scripts/run.sh --remote -p ~/projects/myapp
+  scripts/run.sh --rc -p ~/projects/myapp
 
   # Headless SSH / VS Code Remote-SSH
   scripts/run.sh --ssh -p ~/projects/myapp
 
+  # Both ways at once: start with --ssh, then SSH in and run `claude remote-control`
+  scripts/run.sh --ssh -p ~/projects/myapp
+
   # With NVIDIA GPU
   scripts/run.sh --gpu-nvidia -p ~/projects/ml
-
-  # With AMD GPU
-  scripts/run.sh --gpu-amd -p ~/projects/ml
 EOF
     exit 0
 }
@@ -106,16 +121,13 @@ while [[ $# -gt 0 ]]; do
             [[ -z "${FIRST_PROJECT:-}" ]] && FIRST_PROJECT="${ABSPATH}"
             shift 2 ;;
         --auth)
-            MODE="auth"
+            want_auth=1
             shift ;;
-        --setup-token)
-            MODE="setup-token"
-            shift ;;
-        --remote)
-            MODE="remote"
+        --remote-control|--rc)
+            want_rc=1
             shift ;;
         --ssh)
-            MODE="ssh"
+            want_ssh=1
             shift ;;
         --port)
             SSH_PORT="$2"
@@ -131,45 +143,65 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── Ensure the persistent auth directory exists ───────────────────────────
+# ── Resolve the (exclusive) mode ───────────────────────────────────────────
+# --ssh and --rc can't be combined: a container runs ONE command. To reach one
+# container both ways, start with --ssh and run `claude remote-control` yourself
+# inside the SSH session — it works over SSH (outbound HTTPS, reads the volume
+# login, config dir set via sshd SetEnv).
+if (( want_ssh && want_rc )); then
+    echo "Error: --ssh and --remote-control can't be combined (a container runs one command)." >&2
+    echo "  To use both, start with --ssh, then:" >&2
+    echo "    ssh -p ${SSH_PORT} -i ~/.ssh/id_ed25519 coder@localhost" >&2
+    echo "    claude remote-control      # run this inside the SSH session" >&2
+    exit 1
+fi
+if (( want_auth + want_rc + want_ssh > 1 )); then
+    echo "Error: choose only one of --auth, --remote-control, --ssh." >&2
+    exit 1
+fi
+(( want_auth )) && MODE="auth"
+(( want_rc ))   && MODE="remote-control"
+(( want_ssh ))  && MODE="ssh"
+
+# Fail fast on missing prerequisites before touching the auth dir.
+if [[ "${MODE}" == "ssh" && -z "${SSH_PUBLIC_KEY:-}" ]]; then
+    echo "Error: --ssh needs SSH_PUBLIC_KEY set (your ~/.ssh/id_ed25519.pub contents)." >&2
+    echo "  Add it to .env, then: set -a && source .env && set +a" >&2
+    exit 1
+fi
+
+# ── Seed the persistent auth dir (host-side; no container entrypoint) ──────
 # A real host directory (not a named volume) so the location never depends on
-# podman's storage root — see CLAUDE_AUTH_DIR note above.
+# podman's storage root — see CLAUDE_AUTH_DIR note above. We seed it from the
+# host because this dir is bind-mounted over /home/coder/.claude and would
+# otherwise shadow anything baked into the image:
+#   • settings.json — policy (bypassPermissions, allow list, theme/tui). Always
+#     refreshed from config/, so the suppression flags are guaranteed active.
+#   • .claude.json  — onboarding + trust state, seeded only if absent so a fresh
+#     dir never shows the theme picker or "trust this folder?" dialog. Claude
+#     maintains the file afterward (it never clears these flags).
 mkdir -p "${CLAUDE_AUTH_DIR}"
+[[ -f "${SETTINGS_SRC}" ]] || { echo "Error: missing ${SETTINGS_SRC}" >&2; exit 1; }
+cp "${SETTINGS_SRC}" "${CLAUDE_AUTH_DIR}/settings.json"
+if [[ ! -f "${CLAUDE_AUTH_DIR}/.claude.json" ]]; then
+    printf '%s\n' '{"hasCompletedOnboarding":true,"projects":{"/":{"hasTrustDialogAccepted":true}}}' \
+        > "${CLAUDE_AUTH_DIR}/.claude.json"
+fi
 
 # ── Build base flags ──────────────────────────────────────────────────────
 PODMAN_FLAGS=(
     "--name"    "${CONTAINER_NAME}"
     "--rm"
     # Map your host user (uid 1000) to the container's `coder` user so bind-mounted
-    # project files stay owned by you and remain writable inside the container.
-    # --user 0 starts the entrypoint as root (to set up sshd + drop to coder);
-    # keep-id alone would start as uid 1000 and break that setup.
+    # project files stay owned by you and the seeded config dir is writable. With
+    # bare keep-id the container runs AS coder (uid 1000) — no root, so Claude's
+    # bypass-permissions mode runs with no prompt and no IS_SANDBOX trick. Only
+    # --ssh adds `--user 0` (below), because sshd needs root to start.
     "--userns=keep-id"
-    "--user"    "0"
-    # Auth token storage — a fixed host dir, so login persists across restarts
-    # AND across snap/non-snap invocations. :Z applies a private SELinux label
+    # Persistent login + seeded config. :Z applies a private SELinux label
     # (no-op on Ubuntu, correct on Fedora/RHEL).
     "--volume"  "${CLAUDE_AUTH_DIR}:/home/coder/.claude:Z"
-    # SSH public key (always passed, entrypoint ignores if empty)
-    "--env"     "SSH_PUBLIC_KEY=${SSH_PUBLIC_KEY:-}"
 )
-# NOTE: the SSH port (2222) is published ONLY in --ssh mode (below). All other
-# modes (local / remote-control / auth / setup-token) run `claude` directly and
-# don't need SSH, so they must NOT bind a host port — otherwise a second run (or
-# a leftover container) collides with "address already in use" on 127.0.0.1:2222.
-
-# Only pass credentials that are actually set — empty values would prevent
-# Claude from falling back to the credentials saved in the volume.
-# EXCEPTION: Remote Control (--remote) rejects inference-only credentials. A
-# CLAUDE_CODE_OAUTH_TOKEN (from --setup-token) or an ANTHROPIC_API_KEY cannot
-# establish a Remote Control session — it needs the full-scope claude.ai login
-# saved by --auth (the .credentials.json in the auth dir). If we passed a token,
-# Claude would pick it over the saved login and remote-control would fail with
-# "requires a full-scope login token", so in remote mode we deliberately skip them.
-if [[ "${MODE}" != "remote" ]]; then
-    [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && PODMAN_FLAGS+=("--env" "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
-    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && PODMAN_FLAGS+=("--env" "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
-fi
 
 # Append GPU flags (array may be empty)
 if [[ ${#GPU_FLAGS[@]} -gt 0 ]]; then
@@ -193,27 +225,36 @@ if [[ "${MODE}" == "local" ]]; then
 elif [[ "${MODE}" == "auth" ]]; then
     PODMAN_FLAGS+=("--tty" "--interactive")
     CMD=("claude" "auth" "login")
-elif [[ "${MODE}" == "setup-token" ]]; then
-    PODMAN_FLAGS+=("--tty" "--interactive")
-    CMD=("claude" "setup-token")
-elif [[ "${MODE}" == "remote" ]]; then
+elif [[ "${MODE}" == "remote-control" ]]; then
     # Remote Control: expose THIS container's environment to claude.ai/code and
-    # the Claude mobile app. The connection is outbound HTTPS only — Claude
-    # registers with the Anthropic API and polls for work — so there's NO inbound
-    # port and no --publish. Runs in the foreground with a TTY so the session URL
-    # (and the spacebar QR code) are visible; the process must stay alive to host
-    # the session, so stopping it ends the remote session.
-    PODMAN_FLAGS+=("--tty" "--interactive")
-    CMD=("claude" "remote-control")
+    # the Claude mobile app. Outbound HTTPS only — Claude registers with the API
+    # and polls for work — so there's NO inbound port and no --publish.
+    #
+    # Run DETACHED with no TTY: `claude remote-control` is a server ("no local
+    # interactive session"), and the start prompts ("really start?" / "same dir?")
+    # only appear when it's attached to a TTY. Headless + `--spawn same-dir` makes
+    # it start straight away with no prompts. The session URL goes to the logs
+    # (podman logs) and the session is listed by --name at claude.ai/code.
+    RC_NAME="${CONTAINER_NAME}"
+    [[ -n "${FIRST_PROJECT:-}" ]] && RC_NAME="$(basename -- "${FIRST_PROJECT}")"
+    PODMAN_FLAGS+=("--detach")
+    CMD=("claude" "remote-control" "--spawn" "same-dir" "--name" "${RC_NAME}")
 else
-    # MODE == "ssh": detached, container stays running, you SSH in and start
-    # claude manually (e.g. via VS Code Remote-SSH). Only this mode needs the SSH
-    # port published on the host loopback.
+    # MODE == "ssh": detached, container stays running; you SSH in (as coder,
+    # with your own key) and start claude. sshd needs root, so override keep-id's
+    # default user with --user 0 here only — the SSH *login* is still coder. Your
+    # public key (validated above) is bind-mounted to authorized_keys; host keys
+    # are baked into the image.
+    SSH_KEY_FILE="$(dirname -- "${CLAUDE_AUTH_DIR}")/authorized_keys"
+    printf '%s\n' "${SSH_PUBLIC_KEY}" > "${SSH_KEY_FILE}"
+    chmod 600 "${SSH_KEY_FILE}"
     PODMAN_FLAGS+=(
+        "--user"    "0"
         "--detach"
         "--publish" "127.0.0.1:${SSH_PORT}:2222"
+        "--volume"  "${SSH_KEY_FILE}:/home/coder/.ssh/authorized_keys:ro,Z"
     )
-    CMD=("sleep" "infinity")
+    CMD=("/usr/sbin/sshd" "-D" "-e")
 fi
 
 # ── Print summary ─────────────────────────────────────────────────────────
@@ -225,35 +266,25 @@ if [[ "${MODE}" == "auth" ]]; then
     echo "  Your login will be saved to: ${CLAUDE_AUTH_DIR}"
     echo ""
 fi
-if [[ "${MODE}" == "setup-token" ]]; then
-    echo ""
-    echo "  A URL will appear below. Open it in your browser, complete the login,"
-    echo "  then copy the long-lived token that is printed."
-    echo "  Add it to your .env as:  CLAUDE_CODE_OAUTH_TOKEN=<token>"
-    echo ""
-fi
-if [[ "${MODE}" == "remote" ]]; then
+if [[ "${MODE}" == "remote-control" ]]; then
     echo ""
     echo "  Remote Control — drive this environment from claude.ai/code or the Claude app."
-    echo "  A session URL appears below (press spacebar for a QR code). Keep this"
-    echo "  process running; stopping it ends the remote session."
-    echo ""
-    echo "  Remote Control needs a full claude.ai login — a CLAUDE_CODE_OAUTH_TOKEN or"
-    echo "  ANTHROPIC_API_KEY won't work, so they are NOT passed in this mode."
+    echo "  The container runs in the BACKGROUND; this terminal returns to you."
     if [[ ! -f "${CLAUDE_AUTH_DIR}/.credentials.json" ]]; then
         echo ""
         echo "  ⚠️  No login found at ${CLAUDE_AUTH_DIR}/.credentials.json."
-        echo "     Run 'scripts/run.sh --auth' once first, then retry."
+        echo "     Remote Control needs a full claude.ai login. Run this once first:"
+        echo "       scripts/run.sh --auth"
     fi
     echo ""
 fi
 if [[ "${MODE}" == "ssh" ]]; then
     echo ""
-    echo "  SSH into the container:"
+    echo "  SSH into the container (your own key, the coder account):"
     echo "    ssh -p ${SSH_PORT} -i ~/.ssh/id_ed25519 coder@localhost"
     echo ""
-    echo "  Then start Claude:"
-    echo "    claude"
+    echo "  Then start Claude:        claude"
+    echo "  …or drive it from the web: claude remote-control"
     echo ""
     echo "  Stop the container:"
     echo "    podman stop ${CONTAINER_NAME}"
@@ -269,7 +300,6 @@ if [[ "${MODE}" == "auth" ]]; then
     echo ""
     # On Linux, Claude has no OS keychain: it stores the login as a plaintext
     # file ".credentials.json" inside CLAUDE_CONFIG_DIR — which is this host dir.
-    # It's a normal directory, so we can just check it directly.
     if [[ -f "${CLAUDE_AUTH_DIR}/.credentials.json" ]]; then
         echo "✅ Login saved to ${CLAUDE_AUTH_DIR}/.credentials.json"
         echo "   Future runs stay logged in — just: scripts/run.sh -p ~/your/project"
@@ -277,8 +307,19 @@ if [[ "${MODE}" == "auth" ]]; then
         echo "⚠️  No .credentials.json was written to ${CLAUDE_AUTH_DIR}"
         echo "   The login did not complete. Re-run 'scripts/run.sh --auth' and make sure"
         echo "   you paste the code from the browser back into the terminal when prompted."
-        echo "   Or use the token method instead:  scripts/run.sh --setup-token"
     fi
+    exit 0
+fi
+
+if [[ "${MODE}" == "remote-control" ]]; then
+    # Detached: podman prints the container ID and returns. Tell the user how to
+    # reach the session (the URL is in the logs once Claude connects).
+    podman run "${PODMAN_FLAGS[@]}" "${IMAGE}" "${CMD[@]}"
+    echo ""
+    echo "✅ '${CONTAINER_NAME}' is running in the background."
+    echo "   Session URL / status:  podman logs -f ${CONTAINER_NAME}"
+    echo "   …or open claude.ai/code and pick the session named '${RC_NAME}'."
+    echo "   Stop it:               podman stop ${CONTAINER_NAME}"
     exit 0
 fi
 

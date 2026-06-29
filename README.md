@@ -34,7 +34,7 @@
 │  │   sshd (port 2222) ◄── VS Code Remote-SSH           │  │  │
 │  └────────────────────────────────────────────────────────┘  │
 │       bind-mounts ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘                 │
-│       host dir: ~/.codingseal/claude-auth → ~/.claude/ (token)│
+│       host dir: ~/.codingseal/claude-auth → ~/.claude/ (login)│
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,11 +85,9 @@ cp .env.example .env
 # 2. Build the image (~5 minutes)
 podman build -t coding-seal:latest .
 
-# 3. Authenticate Claude once (see Section 4 for all options).
-#    Recommended: generate a long-lived token and put it in .env
-scripts/run.sh --setup-token
-#    → open the printed URL, log in, copy the token, then add to .env:
-#      CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+# 3. Log in once (see Section 4). A URL is printed → open it, log in, paste the
+#    code back. The login is saved to ~/.codingseal/claude-auth and reused forever.
+scripts/run.sh --auth
 
 # 4. Start working — drops straight into Claude, no prompts
 set -a && source .env && set +a
@@ -131,37 +129,22 @@ Claude Code normally prompts before every file write, shell command, and web req
 
 ## 4. First-Time Authentication
 
-Claude needs credentials to start. After one-time setup, **every run drops you straight into Claude — no theme picker, no "trust this folder?" prompt, no login.** The image bakes in the settings that suppress those wizards, and `CLAUDE_CONFIG_DIR` points Claude's entire state directory at a fixed host folder (`~/.codingseal/claude-auth`) so your login persists across runs.
+Auth is **login-only**: you log in once and the credential is saved to a fixed host folder
+(`~/.codingseal/claude-auth`), then reused on every run. After this, **every run drops you
+straight into Claude — no theme picker, no "trust this folder?" prompt, no re-login.**
+
+> **Why login-only (no token or API key)?** [Remote Control](#mode-d-remote-control--drive-from-claudeaicode)
+> (`scripts/run.sh --rc`) requires a full claude.ai login — long-lived `--setup-token` tokens and
+> `ANTHROPIC_API_KEY` are inference-only and are rejected by it. Standardizing on the login keeps
+> a single auth path that works in every mode.
 
 > **Why a host folder and not a podman named volume?** A named volume lives under podman's storage root, and the VS Code snap relocates that root into its sandbox (`~/snap/code/<rev>/…`). Logging in from one place and restarting from another then hits two different, empty volumes — so the login "vanishes". A bind-mounted host folder is the same path everywhere, snap or not.
 
-Pick **one** of these three methods.
-
-### Option A — Long-lived OAuth token (recommended for Claude subscriptions)
-
-Generate a token once and store it in `.env`. Works with a Claude Pro/Max subscription — no API billing.
+### Log in once
 
 ```bash
-scripts/run.sh --setup-token
-# A URL is printed → open it in your host browser → log in →
-# copy the printed token (starts with sk-ant-oat...)
-```
-
-Paste it into `.env`:
-```bash
-CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-```
-
-Done. Every run is now fully non-interactive.
-
-### Option B — Persistent browser login (saved in the volume)
-
-Leave the token/key blank in `.env` and log in once:
-
-```bash
-set -a && source .env && set +a
 scripts/run.sh --auth
-# URL → host browser → log in → paste code back → container exits
+# A URL is printed → open it in your host browser → log in → paste the code back → container exits
 ```
 
 On Linux there is no OS keychain, so Claude saves the login as a plaintext file —
@@ -173,41 +156,32 @@ The login is saved in a plain host folder:
 ```
 ~/.codingseal/claude-auth/.credentials.json
 ```
-It is user-scoped on your host (mode 600, only you can read it) and reused automatically on every subsequent run — from a normal terminal or the VS Code snap alike. Security is equivalent to storing the token at `~/.claude/` directly on your host. Override the location with `CLAUDE_AUTH_DIR`.
+It is user-scoped on your host (mode 600, only you can read it) and reused automatically on every subsequent run — from a normal terminal, the VS Code snap, or an SSH session alike (sshd hands sessions the same `CLAUDE_CONFIG_DIR`). Override the location with `CLAUDE_AUTH_DIR`.
 
-Remove saved credentials with:
+Remove the saved login with:
 ```bash
 rm -rf ~/.codingseal/claude-auth
 ```
 
-### Option C — API key (pay-per-token API billing)
-
-Set your [console.anthropic.com](https://console.anthropic.com/account/keys) key in `.env`:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-api03-...
-```
-
-Passed as an environment variable each run. Nothing is stored in the container.
-
 ### Why there are no setup prompts
 
-The container is configured so Claude never stops to ask:
+`scripts/run.sh` seeds the auth folder on every run — it copies the policy `settings.json` from
+[config/claude-settings.json](config/claude-settings.json) into it, and writes a minimal
+`.claude.json` (onboarding + trust) the first time. The container itself needs no startup script.
+Together these mean Claude never stops to ask:
 
 | Prompt you would normally see | How it's suppressed |
 |---|---|
 | Theme / color picker | `hasCompletedOnboarding: true` seeded in `.claude.json` |
 | "Do you trust the files in this folder?" | `projects["/"].hasTrustDialogAccepted: true` — trust inherits down to every mounted dir |
 | Bypass-permissions mode (no per-tool prompts) | `permissions.defaultMode: bypassPermissions` in settings.json |
-| "Yes, I accept bypass mode" warning | `skipDangerousModePermissionPrompt: true` in settings.json (the durable key; the old `.claude.json` flag gets migrated away each run) |
-| "Cannot skip permissions as root" | Claude runs as a **non-root `coder` user** — the guard only triggers for root, so the check never fires (no env trick needed) |
+| "Yes, I accept bypass mode" warning | `skipDangerousModePermissionPrompt: true` in settings.json |
+| "Cannot skip permissions as root" | Claude runs as the **non-root `coder` user** — the guard only triggers for root, so the check never fires |
 | "Try the new fullscreen renderer?" | `tui: "default"` pinned in settings.json — any explicit `tui` value suppresses the upsell (use `"fullscreen"` if you prefer the flicker-free alt-screen UI) |
-| Re-login on every run | `CLAUDE_CONFIG_DIR` stores credentials in the persistent host auth folder |
-| Prompts/login still appear over **SSH / VS Code** | sshd starts a clean environment, so the entrypoint injects `CLAUDE_CONFIG_DIR` and your credential into every SSH session via sshd's `SetEnv` |
+| Re-login on every run | `CLAUDE_CONFIG_DIR` (= the persistent host auth folder) holds `.credentials.json` |
+| Prompts/login over **SSH / VS Code** | `config/sshd_config` sets a static `SetEnv CLAUDE_CONFIG_DIR=/home/coder/.claude`, so SSH sessions read the same login + settings as a local run |
 
-These are applied automatically by [entrypoint.sh](entrypoint.sh) and [config/claude-settings.json](config/claude-settings.json) — you don't need to do anything.
-
-> **Authenticating for the SSH / VS Code path:** because SSH sessions don't see `podman run --env` values directly, the entrypoint forwards your `.env` credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) into SSH sessions for you. A volume-stored `--auth` login (Option B) also works over SSH, since the credentials file lives in the volume that every session reads. For headless/remote use the token in `.env` (Option A) is the most reliable, since it needs no interactive step at all.
+These are applied automatically by [scripts/run.sh](scripts/run.sh) and [config/claude-settings.json](config/claude-settings.json) — you don't need to do anything.
 
 ---
 
@@ -251,16 +225,14 @@ scripts/run.sh -p ~/projects/myproject
 
 You land directly in `claude`. Type your task. Claude's bash commands run in the container.
 
-To get a plain shell instead (note `--userns=keep-id --user 0`, which `run.sh` adds for you — the entrypoint starts as root then drops you to `coder`):
+To get a plain shell instead (bare `--userns=keep-id` runs you as the non-root `coder` user — no `--user 0`, which is only needed for the `--ssh` mode's sshd):
 ```bash
 podman run -it --rm \
-  --userns=keep-id --user 0 \
+  --userns=keep-id \
   --volume ~/.codingseal/claude-auth:/home/coder/.claude:Z \
-  --env SSH_PUBLIC_KEY \
   --volume ~/projects/myproject:~/projects/myproject:Z \
   localhost/coding-seal:latest \
   bash
-# (add `--publish 127.0.0.1:2222:2222` only if you also want to SSH in — see Mode B)
 ```
 
 ---
@@ -321,7 +293,7 @@ Host claude-container
 EOF
 ```
 
-> `StrictHostKeyChecking no` is safe here because the connection is loopback-only. The SSH host key changes when a new container starts — this setting avoids the warning.
+> `StrictHostKeyChecking no` is safe here because the connection is loopback-only. The host keys are now baked into the image (`ssh-keygen -A` at build time), so they stay stable across container restarts — you can drop this line if you prefer normal host-key checking; rebuilding the image rotates the keys.
 
 **Step 3 — Connect with VS Code**
 
@@ -416,20 +388,32 @@ The container makes **outbound HTTPS only** — it registers with the Anthropic 
 
 ```bash
 set -a && source .env && set +a
-scripts/run.sh --remote -p ~/projects/myproject
+scripts/run.sh --rc -p ~/projects/myproject     # --rc is short for --remote-control
 ```
 
-A session URL prints in the terminal (press **spacebar** for a QR code to open it on your phone). Open that URL — or find the session in the list at [claude.ai/code](https://claude.ai/code) / the Claude app — and start steering. Keep the process running: it hosts the session, so stopping it ends Remote Control.
+This starts the container **detached, in the background** (your terminal returns immediately) and runs `claude remote-control --spawn same-dir` as a headless server — no startup prompts, all remote sessions open in your mounted project directory. To reach it:
 
-> **Authentication is different for this mode.** Remote Control needs a **full claude.ai login** — the credential from `scripts/run.sh --auth` (Option B), stored as `~/.codingseal/claude-auth/.credentials.json`. The recommended `CLAUDE_CODE_OAUTH_TOKEN` (from `--setup-token`, Option A) and `ANTHROPIC_API_KEY` (Option C) are **inference-only** and are rejected by Remote Control, so `--remote` deliberately does **not** pass them. If you've only used the token method, run `scripts/run.sh --auth` once first.
+```bash
+podman logs -f coding-seal      # prints the session URL once Claude connects
+```
+
+Open that URL — or just go to [claude.ai/code](https://claude.ai/code) / the Claude app and pick the session named after your project. Drive it from there; the container keeps running in the background until you stop it:
+
+```bash
+podman stop coding-seal
+```
+
+> **This mode needs the login from [Section 4](#4-first-time-authentication).** Remote Control requires a full claude.ai login (`scripts/run.sh --auth`), stored as `~/.codingseal/claude-auth/.credentials.json`. That's the only auth method this project uses anyway — `--rc` warns and points you to `--auth` if no login is found.
 
 | Requirement | Notes |
 |---|---|
 | **Plan** | Pro, Max, Team, or Enterprise. API keys are not supported. On Team/Enterprise an Owner must enable the **Remote Control** toggle in [Claude Code admin settings](https://claude.ai/admin-settings/claude-code). |
-| **Login** | A full claude.ai session login (`--auth`). A long-lived token / API key won't work. |
+| **Login** | A full claude.ai session login (`--auth`). |
 | **Claude Code version** | The image installs the latest CLI; Remote Control server mode needs v2.1.51+ — rebuild the image if yours is older. |
 
 Because nothing inbound is exposed, this works through NAT and firewalls with no port forwarding — a simpler alternative to [Mode C](#mode-c-access-from-a-remote-machine) when you just want to reach the container from elsewhere.
+
+> **Want both SSH *and* web control on one container?** They can't auto-start together (a container runs one command), but you don't need them to: start with **`--ssh`**, connect, and run **`claude remote-control`** yourself inside that session. You then have VS Code/SSH *and* the web/mobile session against the same container. (`scripts/run.sh --ssh --rc` is rejected with this same tip.)
 
 ---
 
@@ -501,13 +485,10 @@ If you have a large Python environment on your host and want to avoid reinstalli
 # Find your host site-packages paths
 python3 -c "import site; print('\n'.join(site.getsitepackages()))"
 
-# Add to the run command
+# Add to the run command (bare --userns=keep-id runs as the coder user)
 podman run -it --rm \
-  --userns=keep-id --user 0 \
+  --userns=keep-id \
   --volume ~/.codingseal/claude-auth:/home/coder/.claude:Z \
-  --publish 127.0.0.1:2222:2222 \
-  --env ANTHROPIC_API_KEY \
-  --env SSH_PUBLIC_KEY \
   --volume ~/projects/myproject:~/projects/myproject:Z \
   --volume /usr/lib/python3/dist-packages:/mnt/host-python/dist-packages:ro,Z \
   --volume ~/.local/lib/python3.12/site-packages:/mnt/host-python/user-packages:ro,Z \
@@ -526,8 +507,8 @@ Packages installed with `uv pip install` inside the container go into the contai
 
 | You changed… | Rebuild needed? |
 |---|---|
-| `Containerfile`, `entrypoint.sh`, `config/sshd_config`, `config/claude-settings.json` (e.g. the `coder` user, the `tui` setting) | **Yes** — these are baked into the image: `podman build -t coding-seal:latest .` |
-| `scripts/run.sh`, `.env` (mounts, GPU flags, auth dir, tokens) | No — they take effect on the next run |
+| `Containerfile`, `config/sshd_config` (e.g. the `coder` user, sshd options, baked host keys) | **Yes** — these are baked into the image: `podman build -t coding-seal:latest .` |
+| `scripts/run.sh`, `config/claude-settings.json`, `.env` (mounts, GPU flags, auth dir, the seeded settings) | No — `run.sh` re-seeds `settings.json` from `config/` into the auth folder on every run, so changes take effect immediately |
 
 **Full update** (base OS + Node.js + Claude Code + uv):
 ```bash
@@ -547,12 +528,12 @@ CLAUDE_IMAGE=localhost/coding-seal:py311 scripts/run.sh -p ~/projects/myproject
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Theme picker / trust prompt / login appears | Image built before these fixes | Rebuild: `podman build -t coding-seal:latest .` (seeds the wizard-suppression state) |
-| `claude` asks to authenticate on every run | No saved credentials, or the `--auth` browser step was never completed | Most reliable: set `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (via `--setup-token`). For `--auth`, confirm it printed `✅ Login saved…`; verify with `ls -l ~/.codingseal/claude-auth/.credentials.json` |
+| `claude` asks to authenticate on every run | No saved login, or the `--auth` browser step was never completed | Run `scripts/run.sh --auth`, confirm it printed `✅ Login saved…`; verify with `ls -l ~/.codingseal/claude-auth/.credentials.json` |
 | `--auth` says it saved, but the next run still asks to log in | Older versions stored auth in a podman **named volume**, whose location follows podman's storage root — and the VS Code snap relocates that root into its sandbox (`~/snap/code/<rev>/…`), so login and restart hit different empty volumes | Fixed: `run.sh` now bind-mounts a fixed host folder (`~/.codingseal/claude-auth`) that's identical in every context. Just `scripts/run.sh --auth` once more. (You can delete the stale `claude-auth` named volume: `podman volume rm claude-auth`.) |
 | `--auth` login doesn't stick | Browser code not pasted back, or `~/.codingseal/claude-auth` was deleted between runs | Re-run `scripts/run.sh --auth`, paste the code when prompted, and confirm `~/.codingseal/claude-auth/.credentials.json` exists |
 | `--dangerously-skip-permissions cannot be used with root` | Old image that ran as root | Rebuild — the image now runs Claude as the non-root `coder` user; confirm with `podman exec coding-seal whoami` (should print `coder` for the Claude process) |
-| `Invalid API key` | Bad/expired credential | Regenerate with `scripts/run.sh --setup-token` and update `.env` |
-| `rootlessport listen tcp 127.0.0.1:2222: bind: address already in use` | Another container already holds the SSH port | Only `--ssh` publishes 2222, so local and `--remote` runs no longer collide. If you still see it, an `--ssh` container is up — `podman ps`, then `podman stop coding-seal` (or `--port 2223` for a second one). A container started from a normal terminal may be invisible to `podman ps` run inside the VS Code snap (different storage root) — stop it from the terminal you started it in |
+| `Invalid API key` / auth errors | Expired or incomplete login | Re-run `scripts/run.sh --auth` to refresh the login in `~/.codingseal/claude-auth` |
+| `rootlessport listen tcp 127.0.0.1:2222: bind: address already in use` | Another container already holds the SSH port | Only `--ssh` publishes 2222, so `local` and `--rc` runs no longer collide. If you still see it, an `--ssh` container is up — `podman ps`, then `podman stop coding-seal` (or `--port 2223` for a second one). A container started from a normal terminal may be invisible to `podman ps` run inside the VS Code snap (different storage root) — stop it from the terminal you started it in |
 | `ssh: connect to host localhost port 2222: Connection refused` | Container not running or sshd didn't start | `podman ps`; `podman logs coding-seal` for sshd errors |
 | `Permission denied (publickey)` via SSH | Wrong key or key not injected | Check `SSH_PUBLIC_KEY` is set; `podman exec --user coder coding-seal cat /home/coder/.ssh/authorized_keys` |
 | VS Code says "Cannot connect to remote" | Container not running | Start with `scripts/run.sh --ssh -p ...` first |
@@ -565,9 +546,9 @@ CLAUDE_IMAGE=localhost/coding-seal:py311 scripts/run.sh -p ~/projects/myproject
 | AMD GPU not visible | Group membership issue | `--gpu-amd` includes `--group-add keep-groups`; check `/dev/kfd` exists on host |
 | `claude auth login` URL doesn't open a browser | Container has no display | This is expected — copy the URL, paste it into your **host** browser |
 | VS Code keeps disconnecting | Missing SSH keepalive | `sshd_config` already sets `ClientAliveInterval 30`; check your local `~/.ssh/config` too |
-| `--remote`: "Remote Control requires a full-scope login token" | The container is using a `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` — these are inference-only | Run `scripts/run.sh --auth` once to save a full claude.ai login, then `scripts/run.sh --remote`. `--remote` already drops the token/key env vars, so an existing `.credentials.json` is used |
-| `--remote`: "Remote Control requires a claude.ai subscription" / "not yet enabled" | No claude.ai login, or feature not rolled out to your account | `scripts/run.sh --auth` to log in; confirm your plan supports it (Pro/Max/Team/Enterprise). On Team/Enterprise an Owner must enable the Remote Control toggle in admin settings |
-| `--remote`: no session URL appears / `claude: command not found` for `remote-control` | Image predates Remote Control (needs Claude Code v2.1.51+) | Rebuild: `podman build --pull=newer -t coding-seal:latest .` |
+| `--rc`: "Remote Control requires a full-scope login token" | No claude.ai login in the auth folder (e.g. you deleted it) | Run `scripts/run.sh --auth` once to save a full claude.ai login, then `scripts/run.sh --rc`. The login in `~/.codingseal/claude-auth/.credentials.json` is what Remote Control uses |
+| `--rc`: "Remote Control requires a claude.ai subscription" / "not yet enabled" | No claude.ai login, or feature not rolled out to your account | `scripts/run.sh --auth` to log in; confirm your plan supports it (Pro/Max/Team/Enterprise). On Team/Enterprise an Owner must enable the Remote Control toggle in admin settings |
+| `--rc`: no session URL appears / `claude: command not found` for `remote-control` | Image predates Remote Control (needs Claude Code v2.1.51+) | Rebuild: `podman build --pull=newer -t coding-seal:latest .` |
 
 ---
 
@@ -577,12 +558,11 @@ CLAUDE_IMAGE=localhost/coding-seal:py311 scripts/run.sh -p ~/projects/myproject
 codingseal/
 ├── codingseal.png            ← Project logo
 ├── README.md                 ← This tutorial
-├── Containerfile             ← ubuntu:24.04 + Node LTS + Claude Code + uv + Python + sshd
-├── entrypoint.sh             ← Container startup: injects SSH key, starts sshd, runs CMD
-├── .env.example              ← Copy to .env and fill in your credentials
+├── Containerfile             ← ubuntu:24.04 + Node LTS + Claude Code + uv + Python + sshd (tini as PID 1, no entrypoint script)
+├── .env.example              ← Copy to .env; set SSH_PUBLIC_KEY for --ssh
 ├── scripts/
-│   └── run.sh                ← Wrapper: --setup-token, --auth, --gpu-nvidia/amd, -p PATH, --remote, --ssh
+│   └── run.sh                ← Wrapper: seeds config + runs --auth / --rc / --ssh / -p PATH / --gpu-nvidia|amd
 └── config/
-    ├── sshd_config           ← Port 2222, key-only auth, VS Code keepalive
-    └── claude-settings.json  ← dangerouslySkipPermissions + full allow list
+    ├── sshd_config           ← Port 2222, key-only auth, static SetEnv CLAUDE_CONFIG_DIR, VS Code keepalive
+    └── claude-settings.json  ← bypassPermissions + full allow list (seeded into the auth folder by run.sh)
 ```

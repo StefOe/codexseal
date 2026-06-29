@@ -57,34 +57,36 @@ RUN uv python install ${PYTHON_VERSION} && \
     chmod -R a+rX /opt/uv
 
 # ── SSH server setup ───────────────────────────────────────────────────────
-RUN mkdir -p /run/sshd && chmod 0755 /run/sshd
+# Bake the host keys at build time — stable across container starts, so no
+# "host key changed" warnings — and pre-create coder's .ssh dir (mode 700). In
+# --ssh mode, run.sh bind-mounts your public key to authorized_keys inside it.
+RUN mkdir -p /run/sshd && chmod 0755 /run/sshd && \
+    ssh-keygen -A && \
+    install -d -m 700 -o coder -g coder /home/coder/.ssh
 
 # ── Claude Code config ─────────────────────────────────────────────────────
 # CLAUDE_CONFIG_DIR makes Claude store ALL of its state — settings.json,
-# .claude.json (onboarding/trust/projects), credentials, and sessions — in
-# this single directory. run.sh bind-mounts the host folder ~/.codingseal/claude-auth
-# here at runtime, so everything persists across container restarts (no re-login,
-# no wizard).
+# .claude.json (onboarding/trust/projects), credentials, and sessions — in this
+# single directory. run.sh bind-mounts the host folder ~/.codingseal/claude-auth
+# here at runtime AND seeds settings.json + .claude.json into it, so every run is
+# wizard-free and stays logged in. Nothing config-related is baked into the image
+# (the bind-mount would shadow it anyway) — run.sh is the single source of truth.
 ENV HOME=/home/coder \
     CLAUDE_CONFIG_DIR=/home/coder/.claude
-RUN mkdir -p /home/coder/.claude
+RUN install -d -o coder -g coder /home/coder/.claude
 
 # ── Copy runtime files ─────────────────────────────────────────────────────
 COPY config/sshd_config       /etc/ssh/sshd_config
-# settings.json is saved to two places: /home/coder/.claude/ is shadowed by the
-# mounted host auth folder at runtime, so /etc/claude-settings.json is the
-# persistent backup that entrypoint.sh restores from on every start.
-COPY config/claude-settings.json /home/coder/.claude/settings.json
-COPY config/claude-settings.json /etc/claude-settings.json
-COPY entrypoint.sh            /entrypoint.sh
-RUN chmod +x /entrypoint.sh && chown -R coder:coder /home/coder
+RUN chown -R coder:coder /home/coder
 
 # ── Workspace ──────────────────────────────────────────────────────────────
 WORKDIR /home/coder
 
 EXPOSE 2222
 
-# tini as PID 1 (runs as root: sshd needs it). entrypoint.sh starts sshd, then
-# drops to the coder user for the Claude process.
-ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
-CMD ["bash"]
+# tini as PID 1 (reaps zombies; runs sshd as root in --ssh mode). run.sh supplies
+# the per-mode command (claude / claude remote-control / sshd) and the user: the
+# default is `coder` (uid 1000) via --userns=keep-id, and --ssh overrides with
+# --user 0 so sshd can start (the SSH *login* is still the coder user).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["claude"]
