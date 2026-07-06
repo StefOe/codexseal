@@ -187,6 +187,40 @@ Stop the container with:
 podman stop coding-seal
 ```
 
+## Codex Mobile Remote Access
+
+Codex mobile remote control does not pair directly with the Linux container.
+Mobile setup starts from the Codex desktop app on macOS or Windows, then that
+desktop app can use this container as an SSH host.
+
+Start the container in SSH mode:
+
+```bash
+scripts/run.sh --ssh --gpu-nvidia -p ~/projects/myproject
+```
+
+Add the container to the host machine's `~/.ssh/config`:
+
+```sshconfig
+Host codexseal
+    HostName 127.0.0.1
+    Port 2222
+    User coder
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+```
+
+Then:
+
+1. Open the Codex desktop app on macOS or Windows.
+2. Add or enable the `codexseal` SSH host in Settings > Connections.
+3. Choose `/home/coder/project` as the remote project folder.
+4. Set up Codex mobile from the desktop Codex app.
+
+Your phone controls the desktop Codex App host, and the desktop app runs Codex
+work over SSH inside this container.
+
 ## Access From Another Machine
 
 The SSH port binds to `127.0.0.1` on the host. From another machine, tunnel
