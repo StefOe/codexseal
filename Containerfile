@@ -19,10 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Non-root user ──────────────────────────────────────────────────────────
-# Claude Code's bypass-permissions mode refuses to run as root. Running as a
-# normal user is the canonical fix: the guard (getuid()===0) never fires.
-# uid/gid 1000 matches a typical host user; combined with `--userns=keep-id`
-# in run.sh it keeps bind-mounted project files owned by you and writable.
+# Codex should run as a normal user. uid/gid 1000 matches a typical host user;
+# combined with `--userns=keep-id` in run.sh it keeps bind-mounted project files
+# owned by you and writable.
 # (ubuntu:24.04 ships a default `ubuntu` user at uid/gid 1000 — remove it first.)
 # `-p '*'` leaves the account password-less but UNLOCKED: useradd's default `!`
 # marks it locked, and with `UsePAM no` sshd refuses key login to locked accounts.
@@ -33,17 +32,17 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
 
 # ── Node.js LTS (via NodeSource) ──────────────────────────────────────────
 # ubuntu:24.04 ships Node 18; NodeSource gives Node 22 (current LTS).
-# Claude Code requires Node >= 18.
+# The npm Codex installer requires a current Node runtime.
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Claude Code CLI (global, world-readable — usable by any user) ──────────
-RUN npm install -g @anthropic-ai/claude-code
+# ── Codex CLI (global, world-readable — usable by any user) ───────────────
+RUN npm install -g @openai/codex
 
 # ── Baked-in MCP servers (stdio) ───────────────────────────────────────────
 # Installed globally so `npx -y <pkg>` resolves them offline/instantly at
-# runtime. run.sh registers these as user-scope MCP servers in ~/.claude.json:
+# runtime. run.sh registers these as user-scope MCP servers in ~/.codex/config.toml:
 #   @upstash/context7-mcp                          → up-to-date library docs (Context7)
 #   @modelcontextprotocol/server-sequential-thinking → step-by-step reasoning scaffold
 # (The GitHub MCP server is remote — https://api.githubcopilot.com/mcp/ — so it
@@ -73,16 +72,12 @@ RUN mkdir -p /run/sshd && chmod 0755 /run/sshd && \
     ssh-keygen -A && \
     install -d -m 700 -o coder -g coder /home/coder/.ssh
 
-# ── Claude Code config ─────────────────────────────────────────────────────
-# CLAUDE_CONFIG_DIR makes Claude store ALL of its state — settings.json,
-# .claude.json (onboarding/trust/projects), credentials, and sessions — in this
-# single directory. run.sh bind-mounts the host folder ~/.codingseal/claude-auth
-# here at runtime AND seeds settings.json + .claude.json into it, so every run is
-# wizard-free and stays logged in. Nothing config-related is baked into the image
-# (the bind-mount would shadow it anyway) — run.sh is the single source of truth.
+# ── Codex config ──────────────────────────────────────────────────────────
+# Codex stores config, auth, and sessions under CODEX_HOME. run.sh bind-mounts
+# ~/.codingseal/codex-auth here and seeds config.toml before each run.
 ENV HOME=/home/coder \
-    CLAUDE_CONFIG_DIR=/home/coder/.claude
-RUN install -d -o coder -g coder /home/coder/.claude
+    CODEX_HOME=/home/coder/.codex
+RUN install -d -o coder -g coder /home/coder/.codex
 
 # ── Copy runtime files ─────────────────────────────────────────────────────
 COPY config/sshd_config       /etc/ssh/sshd_config
@@ -94,8 +89,8 @@ WORKDIR /home/coder
 EXPOSE 2222
 
 # tini as PID 1 (reaps zombies; runs sshd as root in --ssh mode). run.sh supplies
-# the per-mode command (claude / claude remote-control / sshd) and the user: the
+# the per-mode command (codex / sshd) and the user: the
 # default is `coder` (uid 1000) via --userns=keep-id, and --ssh overrides with
 # --user 0 so sshd can start (the SSH *login* is still the coder user).
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["claude"]
+CMD ["codex"]

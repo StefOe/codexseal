@@ -24,12 +24,9 @@ ClientAliveCountMax 3
 
 AcceptEnv LANG LC_*
 
-# Give SSH / VS Code Remote-SSH sessions the same config dir as a local run, so
-# they read the login + settings from the bind-mounted ~/.claude volume. This is
-# a fixed path, so it's static here (no entrypoint needed). Auth is login-only —
-# `scripts/run.sh --auth` saves the credential into the volume that every session
-# reads — so there is no token/API key to forward.
-SetEnv CLAUDE_CONFIG_DIR=/home/coder/.claude
+# Give SSH / VS Code Remote-SSH sessions the same Codex home as a local run, so
+# they read the login + settings from the bind-mounted ~/.codex directory.
+SetEnv CODEX_HOME=/home/coder/.codex
 
 # Log to stderr so `podman logs` captures it
 SyslogFacility AUTH
