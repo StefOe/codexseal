@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="codingseal.png" alt="CodingSeal" width="180">
+  <img src="codexseal.png" alt="CodingSeal" width="180">
 
   # CodingSeal - Codex in a Podman Container
 
