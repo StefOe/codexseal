@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gnupg \
         git \
         openssh-server \
-        tini \
         procps \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Non-root user ──────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ RUN mkdir -p /run/sshd && chmod 0755 /run/sshd && \
 
 # ── Codex config ──────────────────────────────────────────────────────────
 # Codex stores config, auth, and sessions under CODEX_HOME. run.sh bind-mounts
-# ~/.codingseal/codex-auth here and seeds config.toml before each run.
+# ~/.codexseal/codex-auth here and seeds config.toml before each run.
 ENV HOME=/home/coder \
     CODEX_HOME=/home/coder/.codex
 RUN install -d -o coder -g coder /home/coder/.codex

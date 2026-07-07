@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="codexseal.png" alt="CodingSeal" width="180">
+  <img src="codexseal.png" alt="CodexSeal" width="180">
 
-  # CodingSeal - Codex in a Podman Container
+  # CodexSeal - Codex in a Podman Container
 
   *Give Codex full tool access inside a rootless Podman container while keeping
   your host filesystem limited to the project directories you explicitly mount.*
@@ -9,11 +9,15 @@
 
 ---
 
+CodexSeal is a Codex-focused rewrite of
+[CodingSeal](https://github.com/TorbenGl/codingseal), adapted from Claude Code
+to OpenAI Codex.
+
 ## What You Get
 
 - Codex CLI installed in an isolated Ubuntu container
 - Full Codex permissions inside the container via `--yolo`
-- Persistent Codex login and config in `~/.codingseal/codex-auth`
+- Persistent Codex login and config in `~/.codexseal/codex-auth`
 - Repeatable project mounts with `-p`
 - VS Code Remote-SSH support
 - Built-in MCP servers for Context7 and Sequential Thinking
@@ -26,7 +30,7 @@ HOST MACHINE
     codex -> mounted project directories only
     sshd  -> optional VS Code Remote-SSH access on localhost:2222
 
-host dir: ~/.codingseal/codex-auth -> /home/coder/.codex
+host dir: ~/.codexseal/codex-auth -> /home/coder/.codex
 ```
 
 ## Prerequisites
@@ -42,15 +46,24 @@ host dir: ~/.codingseal/codex-auth -> /home/coder/.codex
 ## Quick Start
 
 ```bash
-git clone https://github.com/TorbenGl/codingseal.git
-cd codingseal
+git clone git@github.com:StefOe/codexseal.git
+cd codexseal
 cp .env.example .env
 # Edit .env if you want SSH mode or optional MCP tokens.
 
-podman build -t coding-seal:latest .
+podman build -t codexseal:latest .
 
 scripts/run.sh --auth
 scripts/run.sh -p ~/projects/myproject
+```
+
+The default image is intentionally small and close to the original CodingSeal
+base. If you need CUDA and native build tooling, build the optional devel image
+instead:
+
+```bash
+podman build -f Containerfile.cuda -t codexseal:cuda .
+scripts/run.sh --image localhost/codexseal:cuda --gpu-nvidia -p ~/projects/myproject
 ```
 
 Pass an initial prompt after `--`:
@@ -61,7 +74,7 @@ scripts/run.sh -p ~/projects/myproject -- "fix the failing tests"
 
 ## Security Model
 
-CodingSeal treats the container as the security boundary. Codex runs with full
+CodexSeal treats the container as the security boundary. Codex runs with full
 permissions inside the container, but the only host paths it can access are the
 directories you pass with `-p` and the Codex auth/config directory.
 
@@ -70,7 +83,7 @@ Codex can:
 - Read and write mounted project directories
 - Run commands inside the container
 - Use outbound network access from the container
-- Persist auth and Codex state in `~/.codingseal/codex-auth`
+- Persist auth and Codex state in `~/.codexseal/codex-auth`
 
 Codex cannot:
 
@@ -91,7 +104,7 @@ The command runs `codex login --device-auth` inside the container. Complete the
 device login flow in your browser. Codex state is stored in:
 
 ```bash
-~/.codingseal/codex-auth
+~/.codexseal/codex-auth
 ```
 
 Override the location with `CODEX_AUTH_DIR`.
@@ -99,7 +112,7 @@ Override the location with `CODEX_AUTH_DIR`.
 To remove saved Codex state:
 
 ```bash
-rm -rf ~/.codingseal/codex-auth
+rm -rf ~/.codexseal/codex-auth
 ```
 
 ## Project Mounts
@@ -144,9 +157,9 @@ To open a shell instead:
 ```bash
 podman run -it --rm \
   --userns=keep-id \
-  --volume ~/.codingseal/codex-auth:/home/coder/.codex:Z \
+  --volume ~/.codexseal/codex-auth:/home/coder/.codex:Z \
   --volume ~/projects/myproject:~/projects/myproject:Z \
-  localhost/coding-seal:latest \
+  localhost/codexseal:latest \
   bash
 ```
 
@@ -184,7 +197,7 @@ Codex all run in the container.
 Stop the container with:
 
 ```bash
-podman stop coding-seal
+podman stop codexseal
 ```
 
 ## Codex Mobile Remote Access
@@ -233,7 +246,7 @@ ssh -p 2222 -i ~/.ssh/id_ed25519 coder@localhost
 
 ## MCP Servers
 
-`scripts/run.sh` seeds MCP configuration into `~/.codingseal/codex-auth/config.toml`.
+`scripts/run.sh` seeds MCP configuration into `~/.codexseal/codex-auth/config.toml`.
 
 | Server | Enabled | Auth |
 |---|---|---|
@@ -286,12 +299,43 @@ scripts/run.sh --gpu-amd -p ~/projects/ml-project
 
 No GPU is the default.
 
+### CUDA/Build Image
+
+The default image is slim and does not include CUDA headers, `nvcc`, GCC build
+tooling, CMake, Ninja, or BLAS development packages.
+
+For projects that need to compile CUDA/PyTorch extensions or native Python
+packages, build the optional CUDA image:
+
+```bash
+podman build -f Containerfile.cuda -t codexseal:cuda .
+scripts/run.sh --image localhost/codexseal:cuda --gpu-nvidia -p ~/projects/ml-project
+```
+
+The CUDA image uses `docker.io/nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04` and
+includes Python 3.10, GCC 11, CMake, Ninja, `pkg-config`, BLAS/OpenBLAS
+development packages, and these build defaults:
+
+```bash
+CUDA_HOME=/usr/local/cuda
+CC=gcc-11
+CXX=g++-11
+TORCH_CUDA_ARCH_LIST=8.6
+MAX_JOBS=4
+```
+
 ## Updating
 
 Rebuild the image:
 
 ```bash
-podman build --pull=newer -t coding-seal:latest .
+podman build --pull=newer -t codexseal:latest .
+```
+
+Rebuild the optional CUDA image:
+
+```bash
+podman build --pull=newer -f Containerfile.cuda -t codexseal:cuda .
 ```
 
 The Codex auth/config directory is bind-mounted from the host, so rebuilding the
@@ -301,7 +345,7 @@ image does not remove your login.
 
 | Symptom | Fix |
 |---|---|
-| `codex` asks to authenticate every run | Run `scripts/run.sh --auth` and verify `~/.codingseal/codex-auth` is populated |
+| `codex` asks to authenticate every run | Run `scripts/run.sh --auth` and verify `~/.codexseal/codex-auth` is populated |
 | `codex: command not found` | Rebuild the image |
 | SSH mode fails immediately | Set `SSH_PUBLIC_KEY`, usually via `.env` |
 | VS Code terminal is on the host | Confirm the window title shows `[SSH: codex-container]` |
@@ -313,8 +357,9 @@ image does not remove your login.
 ```
 .
 ├── Containerfile
+├── Containerfile.cuda
 ├── README.md
-├── codingseal.png
+├── codexseal.png
 ├── scripts/
 │   └── run.sh
 └── config/

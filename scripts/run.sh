@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh - start the coding-seal Codex container with flexible options
+# run.sh - start the codexseal Codex container with flexible options
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,9 +10,9 @@ GPU_FLAGS=()
 PROJECT_MOUNTS=()
 PROJECT_SHORT_MOUNTS=()
 MODE="local"
-IMAGE="${CODEX_IMAGE:-localhost/coding-seal:latest}"
-CONTAINER_NAME="${CONTAINER_NAME:-coding-seal}"
-CODEX_AUTH_DIR="${CODEX_AUTH_DIR:-${HOME}/.codingseal/codex-auth}"
+IMAGE="${CODEX_IMAGE:-localhost/codexseal:latest}"
+CONTAINER_NAME="${CONTAINER_NAME:-codexseal}"
+CODEX_AUTH_DIR="${CODEX_AUTH_DIR:-${HOME}/.codexseal/codex-auth}"
 SSH_PORT="${SSH_PORT:-2222}"
 
 want_auth=0
@@ -32,8 +32,8 @@ Options:
   -p, --project PATH    Bind-mount a project directory (repeatable)
   --ssh                 Headless: container stays running for SSH / VS Code Remote-SSH
   --port PORT           SSH port on localhost, used by --ssh (default: 2222)
-  --name NAME           Container name (default: coding-seal)
-  --image IMAGE         Image to use (default: localhost/coding-seal:latest)
+  --name NAME           Container name (default: codexseal)
+  --image IMAGE         Image to use (default: localhost/codexseal:latest)
   -h, --help            Show this help
 
 Authentication:
@@ -44,7 +44,7 @@ Authentication:
 Environment variables:
   SSH_PUBLIC_KEY            Public key injected into authorized_keys for --ssh
   CODEX_AUTH_DIR            Host dir for persistent Codex state
-                            (default: ~/.codingseal/codex-auth)
+                            (default: ~/.codexseal/codex-auth)
   SSH_PORT, CONTAINER_NAME, CODEX_IMAGE
                             Override defaults
 
